@@ -15,14 +15,29 @@ add_executable(ros_pico_motorcontrol
     src/main.c
     sdk/pico_uart_transport.c   # required - provides the serial transport
 )
+
+# Find the pre-built pico-servo library
+find_library(PICO_SERVO_LIB 
+    NAMES pico-servo 
+    HINTS "${CMAKE_SOURCE_DIR}/libs/pico-servo/build/libpico-servo.a"
+)
+
+if(NOT PICO_SERVO_LIB)
+    message(FATAL_ERROR "pico-servo library not found. Build it first with 'make build-deps'")
+endif()
+
+
 target_link_libraries(ros_pico_motorcontrol
     pico_stdlib
     microros
+    hardware_pwm
+    ${PICO_SERVO_LIB}
 )
 
 target_include_directories(ros_pico_motorcontrol PUBLIC
     sdk/libmicroros/include
     sdk # for the transport header
+    libs/pico-servo/include # for the servo library headers
 )
 
 SET(CMAKE_C_FLAGS  "${CMAKE_C_FLAGS} -ffunction-sections -fdata-sections")
