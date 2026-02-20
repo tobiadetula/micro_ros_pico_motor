@@ -2,3 +2,6 @@
 	path = sdk
 	url = git@github.com:tobiadetula/micro_ros_raspberrypi_pico_sdk.git
 	branch = jazzy
+[submodule "libs/pico-servo"]
+	path = libs/pico-servo
+	url = https://github.com/irishpatrick/pico-servo.git
