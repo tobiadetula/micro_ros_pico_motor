@@ -1,0 +1,4 @@
+[submodule "sdk"]
+	path = sdk
+	url = git@github.com:tobiadetula/micro_ros_raspberrypi_pico_sdk.git
+	branch = jazzy
