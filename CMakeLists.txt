@@ -17,27 +17,41 @@ add_executable(ros_pico_motorcontrol
 )
 
 # Find the pre-built pico-servo library
-find_library(PICO_SERVO_LIB 
-    NAMES pico-servo 
-    HINTS "${CMAKE_SOURCE_DIR}/libs/pico-servo/build/libpico-servo.a"
-)
+set(PICO_SERVO_LIB "${CMAKE_SOURCE_DIR}/libs/pico-servo/build/libpico-servo.a")
+set(FIXMATH_LIB "${CMAKE_SOURCE_DIR}/libs/pico-servo/build/3rdparty/pico-libfixmath/libfixmath.a")
 
-if(NOT PICO_SERVO_LIB)
-    message(FATAL_ERROR "pico-servo library not found. Build it first with 'make build-deps'")
+message(STATUS "CMAKE_SOURCE_DIR: ${CMAKE_SOURCE_DIR}")
+if(NOT EXISTS ${PICO_SERVO_LIB})
+    message(FATAL_ERROR "pico-servo library not found at ${PICO_SERVO_LIB}. Run 'make build-deps' first.")
 endif()
+message(STATUS "Found PICO_SERVO_LIB: ${PICO_SERVO_LIB}")
+
+if(NOT EXISTS ${FIXMATH_LIB})
+    message(FATAL_ERROR "libfixmath not found. Run 'make build-deps' first.")
+endif()
+message(STATUS "Found libfixmath")
+# find_library(PICO_SERVO_LIB 
+#     NAMES pico-servo 
+#     HINTS "${CMAKE_SOURCE_DIR}/libs/pico-servo/build"
+# )
+
 
 
 target_link_libraries(ros_pico_motorcontrol
     pico_stdlib
     microros
     hardware_pwm
+    hardware_adc
+    hardware_gpio
     ${PICO_SERVO_LIB}
+    ${FIXMATH_LIB}
 )
 
 target_include_directories(ros_pico_motorcontrol PUBLIC
     sdk/libmicroros/include
     sdk # for the transport header
     libs/pico-servo/include # for the servo library headers
+    include/
 )
 
 SET(CMAKE_C_FLAGS  "${CMAKE_C_FLAGS} -ffunction-sections -fdata-sections")
