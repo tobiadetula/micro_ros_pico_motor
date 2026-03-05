@@ -5,3 +5,6 @@
 [submodule "libs/pico-servo"]
 	path = libs/pico-servo
 	url = https://github.com/irishpatrick/pico-servo.git
+[submodule "libs/pico-ina219"]
+	path = libs/pico-ina219
+	url = git@github.com:tobiadetula/pico-INA219.git
