@@ -24,17 +24,20 @@
 #include "hardware/adc.h"
 
 #include "ina219.h"  // Include the INA219 library header
+#include "nau7208.h" // Include the NAU7208 library header
 #include "adc-math.h"
 #include "pololu-driver.h"
 
 const uint LED_PIN = 25;
 
 
-
-
 // 12-bit conversion, assume max value == ADC_VREF == 3.3 V
 const float conversion_factor = 3.3f / (1 << 12);
 
+NAU7802 scale;
+
+
+// Publishers and messages
 rcl_publisher_t publisher;
 std_msgs__msg__Int32 msg;
 
@@ -43,6 +46,9 @@ std_msgs__msg__Float32 board_temperature_msg;
 
 rcl_publisher_t motor_current_publisher;
 std_msgs__msg__Float32 motor_current_msg;
+
+rcl_publisher_t load_cell_publisher;
+std_msgs__msg__Float32 load_cell_msg;
 
 rcl_subscription_t led_subscriber;
 std_msgs__msg__Bool led_msg;
@@ -90,6 +96,18 @@ void motor_current_callback(rcl_timer_t *timer, int64_t last_call_time)
     }
 }
 
+void load_cell_callback(rcl_timer_t *timer, int64_t last_call_time)
+{
+    
+    float weight = nau7802_get_weight(&scale, false, 10, 1000);
+    load_cell_msg.data = weight;
+    rcl_ret_t ret = rcl_publish(&load_cell_publisher, &load_cell_msg, NULL);
+    if (ret != RCL_RET_OK) {
+        gpio_put(LED_PIN, 0);  // turn off LED as error signal
+    }
+}
+
+
 void motor_callback(const void * msgin)
 {
     const std_msgs__msg__Int32 * msg = (const std_msgs__msg__Int32 *)msgin;
@@ -136,10 +154,19 @@ int main()
     gpio_set_dir(LED_PIN, GPIO_OUT);
     gpio_put(LED_PIN, 1);  // Start with LED ON to indicate the program is running
 
-    ina219_i2c_init();
+    default_i2c_init(); // Initialize I2C for INA219 and NAU7802
+
     ina219_init();
     ina219_calibrate(0.1, 3.2); // Calibrate for 0.1 Ohm shunt resistor and 3.2A max expected current
 
+    nau7802_init(&scale);
+    nau7802_begin(&scale, i2c0, true);
+
+    nau7802_calculate_zero_offset(&scale, 8, 500);
+    // place known weight...
+    // nau7802_calculate_calibration_factor(&scale, 0.0f, 8, 500);
+    nau7802_set_calibration_factor(&scale, 1.0f);
+    
     // servo_init();
     // servo_clock_auto();
 
@@ -148,6 +175,7 @@ int main()
     rcl_timer_t timer;
     rcl_timer_t board_temperature_timer;
     rcl_timer_t motor_current_timer;
+    rcl_timer_t load_cell_timer;
 
     rcl_node_t node;
     rcl_allocator_t allocator = rcl_get_default_allocator();
@@ -184,10 +212,19 @@ int main()
         ROSIDL_GET_MSG_TYPE_SUPPORT(std_msgs, msg, Float32),
         "motor_current"
     );
+
+    rclc_publisher_init_default(
+        &load_cell_publisher,
+        &node,
+        ROSIDL_GET_MSG_TYPE_SUPPORT(std_msgs, msg, Float32),
+        "load_cell_weight"
+    );
+
     // Timer
     rclc_timer_init_default(&timer, &support, RCL_MS_TO_NS(100), timer_callback);
     rclc_timer_init_default(&board_temperature_timer, &support, RCL_MS_TO_NS(500), board_temperature_callback);
     rclc_timer_init_default(&motor_current_timer, &support, RCL_MS_TO_NS(100), motor_current_callback);
+    rclc_timer_init_default(&load_cell_timer, &support, RCL_MS_TO_NS(500), load_cell_callback);
 
     // Subscriber
     rclc_subscription_init_default(
@@ -204,12 +241,15 @@ int main()
         ROSIDL_GET_MSG_TYPE_SUPPORT(std_msgs, msg, Int32),
         "motor_control"
     );
+
     // Executor
-    // Initialize the executor with a capacity for 5 handles (timer + board temperature timer + motor current timer + 2 subscribers)
-    rclc_executor_init(&executor, &support.context, 5, &allocator);
+    // Initialize the executor with a capacity for 6 handles (timer + board temperature timer + motor current timer + 2 subscribers)
+    rclc_executor_init(&executor, &support.context, 6, &allocator);
     rclc_executor_add_timer(&executor, &timer);
     rclc_executor_add_timer(&executor, &board_temperature_timer);
     rclc_executor_add_timer(&executor, &motor_current_timer);
+    rclc_executor_add_timer(&executor, &load_cell_timer);
+
     rclc_executor_add_subscription(&executor, &led_subscriber, &led_msg, &led_callback, ON_NEW_DATA);
     rclc_executor_add_subscription(&executor, &motor_subscriber, &motor_subscriber_msg, &motor_callback, ON_NEW_DATA);
     msg.data = 0;

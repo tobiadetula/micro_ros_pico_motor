@@ -16,7 +16,7 @@
 float global_current_LSB;
 
 
-void ina219_i2c_init() {
+void default_i2c_init() {
     i2c_init(INA219_I2C_BUS, 100 * 1000);
     gpio_set_function(4, GPIO_FUNC_I2C);
     gpio_set_function(5, GPIO_FUNC_I2C);

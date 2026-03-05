@@ -2,392 +2,515 @@
 #define NAU7802_PICO_H
 
 #include <stdint.h>
+#include <stdbool.h>
 #include "hardware/i2c.h"
 #include "pico/stdlib.h"
-#include "math.h"
+#include <string.h>
 
-// Register Map
+// ─── I2C Address ─────────────────────────────────────────────────────────────
+
+#define NAU7802_I2C_ADDR 0x2A
+
+// ─── Register Map ────────────────────────────────────────────────────────────
+
 typedef enum
 {
-    NAU7802_PU_CTRL = 0x00,
-    NAU7802_CTRL1,
-    NAU7802_CTRL2,
-    NAU7802_OCAL1_B2,
-    NAU7802_OCAL1_B1,
-    NAU7802_OCAL1_B0,
-    NAU7802_GCAL1_B3,
-    NAU7802_GCAL1_B2,
-    NAU7802_GCAL1_B1,
-    NAU7802_GCAL1_B0,
-    NAU7802_OCAL2_B2,
-    NAU7802_OCAL2_B1,
-    NAU7802_OCAL2_B0,
-    NAU7802_GCAL2_B3,
-    NAU7802_GCAL2_B2,
-    NAU7802_GCAL2_B1,
-    NAU7802_GCAL2_B0,
-    NAU7802_I2C_CONTROL,
-    NAU7802_ADCO_B2,
-    NAU7802_ADCO_B1,
-    NAU7802_ADCO_B0,
-    NAU7802_ADC = 0x15,
-    NAU7802_OTP_B1,
-    NAU7802_OTP_B0,
-    NAU7802_PGA = 0x1B,
-    NAU7802_PGA_PWR = 0x1C,
-    NAU7802_DEVICE_REV = 0x1F
-} Scale_Registers;
+    NAU7802_PU_CTRL     = 0x00,
+    NAU7802_CTRL1       = 0x01,
+    NAU7802_CTRL2       = 0x02,
+    NAU7802_OCAL1_B2    = 0x03,
+    NAU7802_OCAL1_B1    = 0x04,
+    NAU7802_OCAL1_B0    = 0x05,
+    NAU7802_GCAL1_B3    = 0x06,
+    NAU7802_GCAL1_B2    = 0x07,
+    NAU7802_GCAL1_B1    = 0x08,
+    NAU7802_GCAL1_B0    = 0x09,
+    NAU7802_OCAL2_B2    = 0x0A,
+    NAU7802_OCAL2_B1    = 0x0B,
+    NAU7802_OCAL2_B0    = 0x0C,
+    NAU7802_GCAL2_B3    = 0x0D,
+    NAU7802_GCAL2_B2    = 0x0E,
+    NAU7802_GCAL2_B1    = 0x0F,
+    NAU7802_GCAL2_B0    = 0x10,
+    NAU7802_I2C_CONTROL = 0x11,
+    NAU7802_ADCO_B2     = 0x12,
+    NAU7802_ADCO_B1     = 0x13,
+    NAU7802_ADCO_B0     = 0x14,
+    NAU7802_ADC         = 0x15,
+    NAU7802_OTP_B1      = 0x16,
+    NAU7802_OTP_B0      = 0x17,
+    NAU7802_PGA         = 0x1B,
+    NAU7802_PGA_PWR     = 0x1C,
+    NAU7802_DEVICE_REV  = 0x1F
+} NAU7802_Register;
 
-// Gain options
+// ─── PU_CTRL Bit Positions (register 0x00) ───────────────────────────────────
+
+#define NAU7802_PU_CTRL_RR      0   // Register Reset
+#define NAU7802_PU_CTRL_PUD     1   // Power Up Digital
+#define NAU7802_PU_CTRL_PUA     2   // Power Up Analog
+#define NAU7802_PU_CTRL_PUR     3   // Power Up Ready (read-only)
+#define NAU7802_PU_CTRL_CS      4   // Cycle Start
+#define NAU7802_PU_CTRL_CR      5   // Cycle Ready (data available, read-only)
+#define NAU7802_PU_CTRL_OSCS    6   // System Clock Source Select
+#define NAU7802_PU_CTRL_AVDDS   7   // AVDD Source Select (0 = external, 1 = internal LDO)
+
+// ─── PGA Register Bit Positions (register 0x1B) ──────────────────────────────
+
+#define NAU7802_PGA_LDOMODE     6   // LDO Mode (0 = accurate, 1 = less accurate)
+
+// ─── PGA_PWR Register Bit Positions (register 0x1C) ─────────────────────────
+
+#define NAU7802_PGA_PWR_PGA_CAP_EN  7   // PGA output capacitor enable
+
+// ─── Gain Values (CTRL1 bits [2:0]) ─────────────────────────────────────────
+
 typedef enum
 {
-    NAU7802_GAIN_128 = 0b111,
-    NAU7802_GAIN_64  = 0b110,
-    NAU7802_GAIN_32  = 0b101,
-    NAU7802_GAIN_16  = 0b100,
-    NAU7802_GAIN_8   = 0b011,
-    NAU7802_GAIN_4   = 0b010,
+    NAU7802_GAIN_1   = 0b000,
     NAU7802_GAIN_2   = 0b001,
-    NAU7802_GAIN_1   = 0b000
-} NAU7802_Gain_Values;
+    NAU7802_GAIN_4   = 0b010,
+    NAU7802_GAIN_8   = 0b011,
+    NAU7802_GAIN_16  = 0b100,
+    NAU7802_GAIN_32  = 0b101,
+    NAU7802_GAIN_64  = 0b110,
+    NAU7802_GAIN_128 = 0b111
+} NAU7802_Gain;
 
-// Sample rates
+// ─── LDO Voltage Values (CTRL1 bits [5:3]) ───────────────────────────────────
+
 typedef enum
 {
-    NAU7802_SPS_320 = 0b111,
-    NAU7802_SPS_80  = 0b011,
-    NAU7802_SPS_40  = 0b010,
-    NAU7802_SPS_20  = 0b001,
-    NAU7802_SPS_10  = 0b000
-} NAU7802_SPS_Values;
+    NAU7802_LDO_4V5 = 0b000,
+    NAU7802_LDO_4V2 = 0b001,
+    NAU7802_LDO_3V9 = 0b010,
+    NAU7802_LDO_3V6 = 0b011,
+    NAU7802_LDO_3V3 = 0b100,
+    NAU7802_LDO_3V0 = 0b101,
+    NAU7802_LDO_2V7 = 0b110,
+    NAU7802_LDO_2V4 = 0b111
+} NAU7802_LDO;
 
-// Channel selection
+// ─── Sample Rate Values (CTRL2 bits [6:4]) ───────────────────────────────────
+
+typedef enum
+{
+    NAU7802_SPS_10  = 0b000,
+    NAU7802_SPS_20  = 0b001,
+    NAU7802_SPS_40  = 0b010,
+    NAU7802_SPS_80  = 0b011,
+    NAU7802_SPS_320 = 0b111
+} NAU7802_SPS;
+
+// ─── Channel Selection (CTRL2 bit 7) ─────────────────────────────────────────
+
 typedef enum
 {
     NAU7802_CHANNEL_1 = 0,
     NAU7802_CHANNEL_2 = 1
-} NAU7802_Channels;
+} NAU7802_Channel;
 
-// Calibration status
-typedef enum
-{
-    NAU7802_CAL_SUCCESS = 0,
-    NAU7802_CAL_IN_PROGRESS = 1,
-    NAU7802_CAL_FAILURE = 2
-} NAU7802_Cal_Status;
+// ─── Calibration Mode (CTRL2 bits [1:0]) ─────────────────────────────────────
 
-// Calibration mode
 typedef enum
 {
     NAU7802_CALMOD_INTERNAL = 0,
-    NAU7802_CALMOD_OFFSET = 2,
-    NAU7802_CALMOD_GAIN = 3
-} NAU7802_Cal_Mode;
+    NAU7802_CALMOD_OFFSET   = 2,
+    NAU7802_CALMOD_GAIN     = 3
+} NAU7802_CalMode;
 
-class NAU7802
+// ─── Calibration Status ───────────────────────────────────────────────────────
+
+typedef enum
 {
-public:
+    NAU7802_CAL_SUCCESS     = 0,
+    NAU7802_CAL_IN_PROGRESS = 1,
+    NAU7802_CAL_FAILURE     = 2
+} NAU7802_CalStatus;
 
-    NAU7802();
+// ─── Device Struct ────────────────────────────────────────────────────────────
 
-    bool begin(i2c_inst_t *i2cPort = i2c0, bool reset = true);
-    bool isConnected();
-
-    bool available();
-    int32_t getReading();
-    int32_t getAverage(uint8_t samples);
-
-    void calculateZeroOffset(uint8_t averageAmount = 8);
-    void setZeroOffset(int32_t newZeroOffset);
-    int32_t getZeroOffset();
-
-    void calculateCalibrationFactor(float weightOnScale, uint8_t averageAmount = 8);
-    void setCalibrationFactor(float calFactor);
-    float getCalibrationFactor();
-
-    float getWeight(bool allowNegativeWeights = false, uint8_t samplesToTake = 8);
-
-    bool setGain(uint8_t gainValue);
-    bool setSampleRate(uint8_t rate);
-    bool setChannel(uint8_t channelNumber);
-
-    bool reset();
-    bool powerUp();
-    bool powerDown();
-
-    uint8_t getRevisionCode();
-
-    bool setBit(uint8_t bitNumber, uint8_t registerAddress);
-    bool clearBit(uint8_t bitNumber, uint8_t registerAddress);
-    bool getBit(uint8_t bitNumber, uint8_t registerAddress);
-
-    uint8_t getRegister(uint8_t registerAddress);
-    bool setRegister(uint8_t registerAddress, uint8_t value);
-
-    int32_t get24BitRegister(uint8_t registerAddress);
-    bool set24BitRegister(uint8_t registerAddress, int32_t value);
-
-private:
-
-    i2c_inst_t *_i2cPort;
-
-    const uint8_t _deviceAddress = 0x2A;
-
-    int32_t _zeroOffset = 0;
-    float _calibrationFactor = 1.0;
-
-    uint32_t _ldoRampDelay = 250;
-};
-
-/* Constructor */
-void NAU7802_init(NAU7802 *dev)
+typedef struct
 {
-    dev->_i2cPort = i2c0;
+    i2c_inst_t *i2c_port;
+    uint8_t     device_address;
+    int32_t     zero_offset;
+    float       calibration_factor;
+    uint32_t    ldo_ramp_delay_ms;
+} NAU7802;
+
+// ─── API ──────────────────────────────────────────────────────────────────────
+
+// Initialise the struct with default values (call before begin)
+void nau7802_init(NAU7802 *dev);
+
+// Connect to device and optionally configure with sensible defaults
+bool nau7802_begin(NAU7802 *dev, i2c_inst_t *port, bool initialize);
+
+// Returns true if the device ACKs on the bus
+bool nau7802_is_connected(NAU7802 *dev);
+
+// Returns true when a new ADC conversion is ready
+bool nau7802_available(NAU7802 *dev);
+
+// Soft-reset the device
+bool nau7802_reset(NAU7802 *dev);
+
+// Power the analog and digital sections up/down
+bool nau7802_power_up(NAU7802 *dev);
+bool nau7802_power_down(NAU7802 *dev);
+
+// Read the raw 24-bit two's-complement ADC value
+int32_t nau7802_get_reading(NAU7802 *dev);
+
+// Average 'count' readings (blocks up to timeout_ms milliseconds; returns 0 on timeout)
+int32_t nau7802_get_average(NAU7802 *dev, uint8_t count, uint32_t timeout_ms);
+
+// Return calibrated weight; negative weights suppressed unless allow_negative = true
+float nau7802_get_weight(NAU7802 *dev, bool allow_negative, uint8_t samples, uint32_t timeout_ms);
+
+// Store the current average reading as the zero reference
+void nau7802_calculate_zero_offset(NAU7802 *dev, uint8_t average_amount, uint32_t timeout_ms);
+void nau7802_set_zero_offset(NAU7802 *dev, int32_t offset);
+int32_t nau7802_get_zero_offset(const NAU7802 *dev);
+
+// Calibrate the gain factor against a known weight
+void nau7802_calculate_calibration_factor(NAU7802 *dev, float weight_on_scale,
+                                          uint8_t average_amount, uint32_t timeout_ms);
+void nau7802_set_calibration_factor(NAU7802 *dev, float factor);
+float nau7802_get_calibration_factor(const NAU7802 *dev);
+
+// Hardware configuration
+bool nau7802_set_gain(NAU7802 *dev, NAU7802_Gain gain);
+bool nau7802_set_ldo(NAU7802 *dev, NAU7802_LDO ldo);
+bool nau7802_set_sample_rate(NAU7802 *dev, NAU7802_SPS rate);
+bool nau7802_set_channel(NAU7802 *dev, NAU7802_Channel channel);
+
+// Run the internal AFE calibration routine
+NAU7802_CalStatus nau7802_calibrate_afe(NAU7802 *dev, NAU7802_CalMode mode);
+
+// Read the silicon revision code
+uint8_t nau7802_get_revision_code(NAU7802 *dev);
+
+// Low-level register helpers
+uint8_t nau7802_get_register(NAU7802 *dev, uint8_t reg);
+bool    nau7802_set_register(NAU7802 *dev, uint8_t reg, uint8_t value);
+int32_t nau7802_get_24bit_register(NAU7802 *dev, uint8_t reg);
+bool    nau7802_set_bit(NAU7802 *dev, uint8_t bit, uint8_t reg);
+bool    nau7802_clear_bit(NAU7802 *dev, uint8_t bit, uint8_t reg);
+bool    nau7802_get_bit(NAU7802 *dev, uint8_t bit, uint8_t reg);
+
+
+
+// ─── Init ─────────────────────────────────────────────────────────────────────
+
+void nau7802_init(NAU7802 *dev)
+{
+    dev->i2c_port          = i2c0;
+    dev->device_address    = NAU7802_I2C_ADDR;
+    dev->zero_offset       = 0;
+    dev->calibration_factor = 1.0f;
+    dev->ldo_ramp_delay_ms = 250;
 }
 
-/* Begin */
-bool NAU7802_begin(NAU7802 *dev, i2c_inst_t *port, bool initialize)
-{
-    dev->_i2cPort = port;
+// ─── Begin ────────────────────────────────────────────────────────────────────
 
-    if (!NAU7802_isConnected(dev))
+bool nau7802_begin(NAU7802 *dev, i2c_inst_t *port, bool initialize)
+{
+    dev->i2c_port = port;
+
+    // Give the device a moment if it doesn't respond immediately
+    if (!nau7802_is_connected(dev))
     {
         sleep_ms(10);
-        if (!NAU7802_isConnected(dev))
+        if (!nau7802_is_connected(dev))
             return false;
     }
 
-    bool result = true;
+    if (!initialize)
+        return true;
 
-    if (initialize)
-    {
-        result &= NAU7802_reset(dev);
-        result &= NAU7802_powerUp(dev);
-        result &= NAU7802_setLDO(dev, NAU7802_LDO_3V3);
-        result &= NAU7802_setGain(dev, NAU7802_GAIN_128);
-        result &= NAU7802_setSampleRate(dev, NAU7802_SPS_80);
+    bool ok = true;
 
-        uint8_t adc = NAU7802_getRegister(dev, NAU7802_ADC);
-        adc |= 0x30;
-        result &= NAU7802_setRegister(dev, NAU7802_ADC, adc);
+    ok &= nau7802_reset(dev);
+    ok &= nau7802_power_up(dev);
+    ok &= nau7802_set_ldo(dev, NAU7802_LDO_3V3);
+    ok &= nau7802_set_gain(dev, NAU7802_GAIN_128);
+    ok &= nau7802_set_sample_rate(dev, NAU7802_SPS_80);
 
-        result &= NAU7802_setBit(dev, NAU7802_PGA_PWR_PGA_CAP_EN, NAU7802_PGA_PWR);
-        result &= NAU7802_clearBit(dev, NAU7802_PGA_LDOMODE, NAU7802_PGA);
+    // Recommended ADC register tweak from datasheet section 9.1
+    uint8_t adc = nau7802_get_register(dev, NAU7802_ADC);
+    adc |= 0x30;
+    ok &= nau7802_set_register(dev, NAU7802_ADC, adc);
 
-        sleep_ms(dev->_ldoRampDelay);
+    // Enable PGA output capacitor, use accurate LDO mode
+    ok &= nau7802_set_bit(dev, NAU7802_PGA_PWR_PGA_CAP_EN, NAU7802_PGA_PWR);
+    ok &= nau7802_clear_bit(dev, NAU7802_PGA_LDOMODE, NAU7802_PGA);
 
-        NAU7802_getWeight(dev, true, 10, 1000);
+    // Wait for the internal LDO to ramp up
+    sleep_ms(dev->ldo_ramp_delay_ms);
 
-        result &= NAU7802_calibrateAFE(dev, NAU7802_CALMOD_INTERNAL);
-    }
+    // Discard initial noisy readings
+    nau7802_get_average(dev, 10, 1000);
 
-    return result;
+    // Run internal offset/gain calibration
+    NAU7802_CalStatus cal = nau7802_calibrate_afe(dev, NAU7802_CALMOD_INTERNAL);
+    ok &= (cal == NAU7802_CAL_SUCCESS);
+
+    return ok;
 }
 
-/* Check I2C connection */
-bool NAU7802_isConnected(NAU7802 *dev)
+// ─── Connectivity ─────────────────────────────────────────────────────────────
+
+bool nau7802_is_connected(NAU7802 *dev)
 {
-    uint8_t buf;
-    int ret = i2c_read_blocking(dev->_i2cPort, dev->_deviceAddress, &buf, 1, false);
-    return (ret >= 0);
+    uint8_t dummy;
+    return i2c_read_blocking(dev->i2c_port, dev->device_address, &dummy, 1, false) >= 0;
 }
 
-/* Data ready */
-bool NAU7802_available(NAU7802 *dev)
+// ─── Data Ready ───────────────────────────────────────────────────────────────
+
+bool nau7802_available(NAU7802 *dev)
 {
-    return NAU7802_getBit(dev, NAU7802_PU_CTRL_CR, NAU7802_PU_CTRL);
+    return nau7802_get_bit(dev, NAU7802_PU_CTRL_CR, NAU7802_PU_CTRL);
 }
 
-/* Reset */
-bool NAU7802_reset(NAU7802 *dev)
+// ─── Reset ────────────────────────────────────────────────────────────────────
+
+bool nau7802_reset(NAU7802 *dev)
 {
-    NAU7802_setBit(dev, NAU7802_PU_CTRL_RR, NAU7802_PU_CTRL);
+    nau7802_set_bit(dev, NAU7802_PU_CTRL_RR, NAU7802_PU_CTRL);
     sleep_ms(1);
-    return NAU7802_clearBit(dev, NAU7802_PU_CTRL_RR, NAU7802_PU_CTRL);
+    return nau7802_clear_bit(dev, NAU7802_PU_CTRL_RR, NAU7802_PU_CTRL);
 }
 
-/* Power Up */
-bool NAU7802_powerUp(NAU7802 *dev)
+// ─── Power Up / Down ─────────────────────────────────────────────────────────
+
+bool nau7802_power_up(NAU7802 *dev)
 {
-    NAU7802_setBit(dev, NAU7802_PU_CTRL_PUD, NAU7802_PU_CTRL);
-    NAU7802_setBit(dev, NAU7802_PU_CTRL_PUA, NAU7802_PU_CTRL);
+    nau7802_set_bit(dev, NAU7802_PU_CTRL_PUD, NAU7802_PU_CTRL);
+    nau7802_set_bit(dev, NAU7802_PU_CTRL_PUA, NAU7802_PU_CTRL);
 
-    uint8_t counter = 0;
-
-    while (1)
+    // Poll the Power-Up Ready bit (PUR) with a 100 ms timeout
+    for (uint8_t i = 0; i < 100; i++)
     {
-        if (NAU7802_getBit(dev, NAU7802_PU_CTRL_PUR, NAU7802_PU_CTRL))
-            break;
-
+        if (nau7802_get_bit(dev, NAU7802_PU_CTRL_PUR, NAU7802_PU_CTRL))
+            return nau7802_set_bit(dev, NAU7802_PU_CTRL_CS, NAU7802_PU_CTRL);
         sleep_ms(1);
-
-        if (counter++ > 100)
-            return false;
     }
-
-    return NAU7802_setBit(dev, NAU7802_PU_CTRL_CS, NAU7802_PU_CTRL);
+    return false;
 }
 
-/* Power Down */
-bool NAU7802_powerDown(NAU7802 *dev)
+bool nau7802_power_down(NAU7802 *dev)
 {
-    NAU7802_clearBit(dev, NAU7802_PU_CTRL_PUD, NAU7802_PU_CTRL);
-    return NAU7802_clearBit(dev, NAU7802_PU_CTRL_PUA, NAU7802_PU_CTRL);
+    nau7802_clear_bit(dev, NAU7802_PU_CTRL_PUD, NAU7802_PU_CTRL);
+    return nau7802_clear_bit(dev, NAU7802_PU_CTRL_PUA, NAU7802_PU_CTRL);
 }
 
-/* Set Sample Rate */
-bool NAU7802_setSampleRate(NAU7802 *dev, uint8_t rate)
+// ─── Configuration ────────────────────────────────────────────────────────────
+
+bool nau7802_set_gain(NAU7802 *dev, NAU7802_Gain gain)
 {
-    if (rate > 0b111)
-        rate = 0b111;
-
-    uint8_t value = NAU7802_getRegister(dev, NAU7802_CTRL2);
-    value &= 0b10001111;
-    value |= rate << 4;
-
-    return NAU7802_setRegister(dev, NAU7802_CTRL2, value);
+    uint8_t value = nau7802_get_register(dev, NAU7802_CTRL1);
+    value &= 0b11111000;            // clear bits [2:0]
+    value |= (uint8_t)gain & 0x07;
+    return nau7802_set_register(dev, NAU7802_CTRL1, value);
 }
 
-/* Set Gain */
-bool NAU7802_setGain(NAU7802 *dev, uint8_t gain)
+bool nau7802_set_ldo(NAU7802 *dev, NAU7802_LDO ldo)
 {
-    if (gain > 0b111)
-        gain = 0b111;
+    uint8_t value = nau7802_get_register(dev, NAU7802_CTRL1);
+    value &= 0b11000111;            // clear bits [5:3]
+    value |= ((uint8_t)ldo & 0x07) << 3;
+    nau7802_set_register(dev, NAU7802_CTRL1, value);
 
-    uint8_t value = NAU7802_getRegister(dev, NAU7802_CTRL1);
-    value &= 0b11111000;
-    value |= gain;
-
-    return NAU7802_setRegister(dev, NAU7802_CTRL1, value);
+    // Route AVDD from the internal LDO
+    return nau7802_set_bit(dev, NAU7802_PU_CTRL_AVDDS, NAU7802_PU_CTRL);
 }
 
-/* Set LDO */
-bool NAU7802_setLDO(NAU7802 *dev, uint8_t ldo)
+bool nau7802_set_sample_rate(NAU7802 *dev, NAU7802_SPS rate)
 {
-    if (ldo > 0b111)
-        ldo = 0b111;
-
-    uint8_t value = NAU7802_getRegister(dev, NAU7802_CTRL1);
-    value &= 0b11000111;
-    value |= ldo << 3;
-
-    NAU7802_setRegister(dev, NAU7802_CTRL1, value);
-
-    return NAU7802_setBit(dev, NAU7802_PU_CTRL_AVDDS, NAU7802_PU_CTRL);
+    uint8_t value = nau7802_get_register(dev, NAU7802_CTRL2);
+    value &= 0b10001111;            // clear bits [6:4]
+    value |= ((uint8_t)rate & 0x07) << 4;
+    return nau7802_set_register(dev, NAU7802_CTRL2, value);
 }
 
-/* Read ADC value */
-int32_t NAU7802_getReading(NAU7802 *dev)
+bool nau7802_set_channel(NAU7802 *dev, NAU7802_Channel channel)
 {
-    return NAU7802_get24BitRegister(dev, NAU7802_ADCO_B2);
+    if (channel == NAU7802_CHANNEL_1)
+        return nau7802_clear_bit(dev, 7, NAU7802_CTRL2);
+    else
+        return nau7802_set_bit(dev, 7, NAU7802_CTRL2);
 }
 
-/* Average readings */
-int32_t NAU7802_getAverage(NAU7802 *dev, uint8_t count, uint32_t timeout_ms)
+// ─── AFE Calibration ─────────────────────────────────────────────────────────
+
+NAU7802_CalStatus nau7802_calibrate_afe(NAU7802 *dev, NAU7802_CalMode mode)
 {
-    int32_t total = 0;
-    uint8_t samples = 0;
+    // Write calibration mode and start bit
+    uint8_t ctrl2 = nau7802_get_register(dev, NAU7802_CTRL2);
+    ctrl2 &= 0b11111100;            // clear CALMOD bits [1:0]
+    ctrl2 |= (uint8_t)mode & 0x03;
+    ctrl2 |= (1 << 2);             // CALS bit — start calibration
+    nau7802_set_register(dev, NAU7802_CTRL2, ctrl2);
 
-    uint32_t start = to_ms_since_boot(get_absolute_time());
-
-    while (1)
+    // Poll until CALS clears (calibration done) or timeout
+    for (uint16_t i = 0; i < 1000; i++)
     {
-        if (NAU7802_available(dev))
+        sleep_ms(1);
+        uint8_t status = nau7802_get_register(dev, NAU7802_CTRL2);
+
+        if (!(status & (1 << 2)))  // CALS cleared → done
         {
-            total += NAU7802_getReading(dev);
-            samples++;
-
-            if (samples == count)
-                break;
+            // CAL_ERR bit (bit 3) indicates failure
+            return (status & (1 << 3)) ? NAU7802_CAL_FAILURE : NAU7802_CAL_SUCCESS;
         }
+    }
+    return NAU7802_CAL_FAILURE;
+}
 
+// ─── Readings ─────────────────────────────────────────────────────────────────
+
+int32_t nau7802_get_reading(NAU7802 *dev)
+{
+    return nau7802_get_24bit_register(dev, NAU7802_ADCO_B2);
+}
+
+int32_t nau7802_get_average(NAU7802 *dev, uint8_t count, uint32_t timeout_ms)
+{
+    if (count == 0)
+        return 0;
+
+    int32_t  total   = 0;
+    uint8_t  samples = 0;
+    uint32_t start   = to_ms_since_boot(get_absolute_time());
+
+    while (samples < count)
+    {
         if (to_ms_since_boot(get_absolute_time()) - start > timeout_ms)
-            return 0;
+            return 0;   // timed out before collecting enough samples
 
-        sleep_ms(1);
+        if (nau7802_available(dev))
+        {
+            total += nau7802_get_reading(dev);
+            samples++;
+        }
+        else
+        {
+            sleep_ms(1);
+        }
     }
 
-    return total / count;
+    return total / (int32_t)count;
 }
 
-/* Weight calculation */
-float NAU7802_getWeight(NAU7802 *dev, bool allowNegative, uint8_t samples, uint32_t timeout_ms)
+// ─── Weight ───────────────────────────────────────────────────────────────────
+
+float nau7802_get_weight(NAU7802 *dev, bool allow_negative,
+                         uint8_t samples, uint32_t timeout_ms)
 {
-    int32_t reading = NAU7802_getAverage(dev, samples, timeout_ms);
+    int32_t reading = nau7802_get_average(dev, samples, timeout_ms);
 
-    if (!allowNegative && reading < dev->_zeroOffset)
-        reading = dev->_zeroOffset;
+    if (!allow_negative && reading < dev->zero_offset)
+        reading = dev->zero_offset;
 
-    float weight = (float)(reading - dev->_zeroOffset) / dev->_calibrationFactor;
-
-    return weight;
+    return (float)(reading - dev->zero_offset) / dev->calibration_factor;
 }
 
-/* I2C Register Read */
-uint8_t NAU7802_getRegister(NAU7802 *dev, uint8_t reg)
+// ─── Zero / Calibration Factor ────────────────────────────────────────────────
+
+void nau7802_calculate_zero_offset(NAU7802 *dev, uint8_t average_amount,
+                                   uint32_t timeout_ms)
 {
-    uint8_t value;
+    dev->zero_offset = nau7802_get_average(dev, average_amount, timeout_ms);
+}
 
-    if (i2c_write_blocking(dev->_i2cPort, dev->_deviceAddress, &reg, 1, true) < 0)
-        return 0;
+void nau7802_set_zero_offset(NAU7802 *dev, int32_t offset)
+{
+    dev->zero_offset = offset;
+}
 
-    if (i2c_read_blocking(dev->_i2cPort, dev->_deviceAddress, &value, 1, false) < 0)
-        return 0;
+int32_t nau7802_get_zero_offset(const NAU7802 *dev)
+{
+    return dev->zero_offset;
+}
 
+void nau7802_calculate_calibration_factor(NAU7802 *dev, float weight_on_scale,
+                                          uint8_t average_amount, uint32_t timeout_ms)
+{
+    int32_t reading = nau7802_get_average(dev, average_amount, timeout_ms);
+    dev->calibration_factor = (float)(reading - dev->zero_offset) / weight_on_scale;
+}
+
+void nau7802_set_calibration_factor(NAU7802 *dev, float factor)
+{
+    dev->calibration_factor = factor;
+}
+
+float nau7802_get_calibration_factor(const NAU7802 *dev)
+{
+    return dev->calibration_factor;
+}
+
+// ─── Revision Code ───────────────────────────────────────────────────────────
+
+uint8_t nau7802_get_revision_code(NAU7802 *dev)
+{
+    return nau7802_get_register(dev, NAU7802_DEVICE_REV) & 0x0F;
+}
+
+// ─── Low-Level Register I/O ──────────────────────────────────────────────────
+
+uint8_t nau7802_get_register(NAU7802 *dev, uint8_t reg)
+{
+    uint8_t value = 0;
+    if (i2c_write_blocking(dev->i2c_port, dev->device_address, &reg, 1, true)  < 0) return 0;
+    if (i2c_read_blocking (dev->i2c_port, dev->device_address, &value, 1, false) < 0) return 0;
     return value;
 }
 
-/* I2C Register Write */
-bool NAU7802_setRegister(NAU7802 *dev, uint8_t reg, uint8_t value)
+bool nau7802_set_register(NAU7802 *dev, uint8_t reg, uint8_t value)
 {
     uint8_t buf[2] = {reg, value};
-
-    int ret = i2c_write_blocking(dev->_i2cPort, dev->_deviceAddress, buf, 2, false);
-
-    return ret >= 0;
+    return i2c_write_blocking(dev->i2c_port, dev->device_address, buf, 2, false) >= 0;
 }
 
-/* Read 24-bit register */
-int32_t NAU7802_get24BitRegister(NAU7802 *dev, uint8_t reg)
+int32_t nau7802_get_24bit_register(NAU7802 *dev, uint8_t reg)
 {
-    uint8_t data[3];
+    uint8_t data[3] = {0};
+    if (i2c_write_blocking(dev->i2c_port, dev->device_address, &reg, 1, true)    < 0) return 0;
+    if (i2c_read_blocking (dev->i2c_port, dev->device_address, data, 3, false)   < 0) return 0;
 
-    if (i2c_write_blocking(dev->_i2cPort, dev->_deviceAddress, &reg, 1, true) < 0)
-        return 0;
+    int32_t value = ((int32_t)data[0] << 16) |
+                    ((int32_t)data[1] <<  8) |
+                     (int32_t)data[2];
 
-    if (i2c_read_blocking(dev->_i2cPort, dev->_deviceAddress, data, 3, false) < 0)
-        return 0;
-
-    int32_t value =
-        ((int32_t)data[0] << 16) |
-        ((int32_t)data[1] << 8) |
-        data[2];
-
+    // Sign-extend from 24 bits to 32 bits
     if (value & 0x00800000)
-        value |= 0xFF000000;
+        value |= (int32_t)0xFF000000;
 
     return value;
 }
 
-/* Bit helpers */
-bool NAU7802_setBit(NAU7802 *dev, uint8_t bit, uint8_t reg)
+// ─── Bit Helpers ─────────────────────────────────────────────────────────────
+
+bool nau7802_set_bit(NAU7802 *dev, uint8_t bit, uint8_t reg)
 {
-    uint8_t val = NAU7802_getRegister(dev, reg);
-    val |= (1 << bit);
-    return NAU7802_setRegister(dev, reg, val);
+    uint8_t val = nau7802_get_register(dev, reg);
+    val |= (uint8_t)(1u << bit);
+    return nau7802_set_register(dev, reg, val);
 }
 
-bool NAU7802_clearBit(NAU7802 *dev, uint8_t bit, uint8_t reg)
+bool nau7802_clear_bit(NAU7802 *dev, uint8_t bit, uint8_t reg)
 {
-    uint8_t val = NAU7802_getRegister(dev, reg);
-    val &= ~(1 << bit);
-    return NAU7802_setRegister(dev, reg, val);
+    uint8_t val = nau7802_get_register(dev, reg);
+    val &= (uint8_t)~(1u << bit);
+    return nau7802_set_register(dev, reg, val);
 }
 
-bool NAU7802_getBit(NAU7802 *dev, uint8_t bit, uint8_t reg)
+bool nau7802_get_bit(NAU7802 *dev, uint8_t bit, uint8_t reg)
 {
-    uint8_t val = NAU7802_getRegister(dev, reg);
-    return (val & (1 << bit)) != 0;
+    return (nau7802_get_register(dev, reg) & (1u << bit)) != 0;
 }
-
-#endif
+#endif // NAU7802_PICO_H
