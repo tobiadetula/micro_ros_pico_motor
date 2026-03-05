@@ -1,4 +1,4 @@
-.PHONY: build upload clean all help build-deps rebuild
+.PHONY: build upload clean all help build-libs rebuild
 .DEFAULT_GOAL := help
 
 # Config
@@ -14,7 +14,7 @@ help:
 	@echo ""
 	@echo "Available targets:"
 	@echo "  build        - Configure and build firmware"
-	@echo "  build-deps   - Build pico-servo dependencies"
+	@echo "  build-libs   - Build pico-servo and dependencies"
 	@echo "  rebuild      - Rebuild without cleaning"
 	@echo "  upload       - Upload firmware to Pico"
 	@echo "  clean        - Remove build artifacts"
@@ -34,7 +34,7 @@ build:
 		(echo "==> BUILD FAILED (make). Check $(LOG_FILE)." && exit 1)
 	@echo "==> Build successful: $(BUILD_DIR)/$(TARGET).uf2"
 
-build-deps:
+build-libs:
 	@echo "==> Building pico-servo and dependencies..."
 	@cd $(LIB_DIR)/pico-servo && \
 		git submodule update --init --recursive 2>&1 | tee -a ../$(LOG_FILE) || \
@@ -43,7 +43,11 @@ build-deps:
 		cmake .. 2>&1 | tee -a ../$(LOG_FILE) && \
 		make -j4 2>&1 | tee -a ../$(LOG_FILE) || \
 		(echo "ERROR: pico-servo build failed. Check $(LOG_FILE)." && exit 1)
-	@echo "==> Dependencies built successfully."
+# 	@cd $(LIB_DIR)/pico-ina219 && \
+# 		cmake .. 2>&1 | tee -a ../$(LOG_FILE) && \
+# 		make -j4 2>&1 | tee -a ../$(LOG_FILE) || \
+# 		(echo "ERROR: pico-ina219 build failed. Check $(LOG_FILE)." && exit 1)
+	@echo "==> Libraries built successfully."
 
 rebuild:
 	@cd $(BUILD_DIR) && \

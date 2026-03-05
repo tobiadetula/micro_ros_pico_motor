@@ -23,6 +23,7 @@
 #include "hardware/structs/sio.h"
 #include "hardware/adc.h"
 
+#include "ina219.h"  // Include the INA219 library header
 #include "adc-math.h"
 #include "pololu-driver.h"
 
@@ -79,8 +80,9 @@ void board_temperature_callback(rcl_timer_t *timer, int64_t last_call_time)
 
 void motor_current_callback(rcl_timer_t *timer, int64_t last_call_time)
 {
-    adc_select_input(0); // Tell the ADC to look at GPIO 26
-    float current = motor_get_current_amps();
+    // adc_select_input(0); // Tell the ADC to look at GPIO 26
+    // float current = motor_get_current_amps();
+    float current = fabs(ina219_read_current()); // Calculate current using shunt voltage and shunt resistor value (0.1 Ohm)
     motor_current_msg.data = current;
     rcl_ret_t ret = rcl_publish(&motor_current_publisher, &motor_current_msg, NULL);
     if (ret != RCL_RET_OK) {
@@ -133,6 +135,10 @@ int main()
     gpio_init(LED_PIN);
     gpio_set_dir(LED_PIN, GPIO_OUT);
     gpio_put(LED_PIN, 1);  // Start with LED ON to indicate the program is running
+
+    ina219_i2c_init();
+    ina219_init();
+    ina219_calibrate(0.1, 3.2); // Calibrate for 0.1 Ohm shunt resistor and 3.2A max expected current
 
     // servo_init();
     // servo_clock_auto();

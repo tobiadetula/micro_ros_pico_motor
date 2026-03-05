@@ -9,6 +9,9 @@ set(CMAKE_CXX_STANDARD 17)
 
 pico_sdk_init()
 
+# Pull in the INA219 library (from the submodule)
+add_subdirectory(libs/pico-ina219)
+
 # Pull in micro-ROS
 link_directories(sdk/libmicroros)
 add_executable(ros_pico_motorcontrol
@@ -43,8 +46,10 @@ target_link_libraries(ros_pico_motorcontrol
     hardware_pwm
     hardware_adc
     hardware_gpio
+    hardware_i2c
     ${PICO_SERVO_LIB}
     ${FIXMATH_LIB}
+    # pico-ina219
 )
 
 target_include_directories(ros_pico_motorcontrol PUBLIC
