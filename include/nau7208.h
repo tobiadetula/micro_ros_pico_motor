@@ -7,6 +7,24 @@
 #include "pico/stdlib.h"
 #include <string.h>
 
+// ── Calibration constants — measure these once and hard-code them ─────────────
+//   1. Flash with CALIBRATE_MODE 1, place nothing on scale, note zero_offset
+//   2. Flash with CALIBRATE_MODE 2, place known weight, note cal_factor
+//   3. Set CALIBRATE_MODE 0 and fill in the values below
+#define CALIBRATE_MODE   0        // 0 = normal, 1 = zero, 2 = gain
+#define KNOWN_WEIGHT_G   500.0f   // grams on scale during gain calibration
+
+#define SAVED_ZERO_OFFSET   0           // <-- replace after step 1
+#define SAVED_CAL_FACTOR    420.0f      // <-- replace after step 2
+
+// ── Averaging / timeout ───────────────────────────────────────────────────────
+#define SAMPLES      10
+#define TIMEOUT_MS   2000
+
+// ─────────────────────────────────────────────────────────────────────────────
+
+
+
 // ─── I2C Address ─────────────────────────────────────────────────────────────
 
 #define NAU7802_I2C_ADDR 0x2A
