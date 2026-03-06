@@ -93,15 +93,29 @@ void motor_current_callback(rcl_timer_t *timer, int64_t last_call_time) {
   }
 }
 
-void load_cell_callback(rcl_timer_t *timer, int64_t last_call_time) {
+// Global accumulator state
+static int32_t lc_total = 0;
+static uint8_t lc_samples = 0;
+static bool lc_ready = false;
 
-  float weight =
-      nau7802_get_weight(&scale,
-                         /*allow_negative=*/false, SAMPLES, TIMEOUT_MS);
-  load_cell_msg.data = weight;
-  rcl_ret_t ret = rcl_publish(&load_cell_publisher, &load_cell_msg, NULL);
-  if (ret != RCL_RET_OK) {
-    gpio_put(LED_PIN, 0); // turn off LED as error signal
+void load_cell_callback(rcl_timer_t *timer, int64_t last_call_time) {
+  // Take one sample per callback invocation if data is ready
+  if (nau7802_available(&scale)) {
+    lc_total += nau7802_get_reading(&scale);
+    lc_samples++;
+  }
+
+  if (lc_samples >= SAMPLES) {
+    float weight = (float)(lc_total / lc_samples - scale.zero_offset) /
+                   scale.calibration_factor;
+    lc_total = 0;
+    lc_samples = 0;
+
+    load_cell_msg.data = weight;
+    rcl_ret_t ret = rcl_publish(&load_cell_publisher, &load_cell_msg, NULL);
+    if (ret != RCL_RET_OK) {
+      gpio_put(LED_PIN, 0);
+    }
   }
 }
 
@@ -204,9 +218,9 @@ int main() {
                           board_temperature_callback);
   rclc_timer_init_default(&motor_current_timer, &support, RCL_MS_TO_NS(100),
                           motor_current_callback);
-  rclc_timer_init_default(&load_cell_timer, &support, RCL_MS_TO_NS(500),
+  rclc_timer_init_default(&load_cell_timer, &support,
+                          RCL_MS_TO_NS(12), // ~80 SPS
                           load_cell_callback);
-
   // Subscriber
   rclc_subscription_init_default(
       &led_subscriber, &node, ROSIDL_GET_MSG_TYPE_SUPPORT(std_msgs, msg, Bool),

@@ -15,7 +15,7 @@
 #define KNOWN_WEIGHT_G   500.0f   // grams on scale during gain calibration
 
 #define SAVED_ZERO_OFFSET   0           // <-- replace after step 1
-#define SAVED_CAL_FACTOR    420.0f      // <-- replace after step 2
+#define SAVED_CAL_FACTOR    1300.0f      // <-- replace after step 2
 
 // ── Averaging / timeout ───────────────────────────────────────────────────────
 #define SAMPLES      10
