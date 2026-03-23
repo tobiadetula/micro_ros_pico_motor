@@ -20,6 +20,7 @@
 #include "hardware/structs/ioqspi.h"
 #include "hardware/structs/sio.h"
 #include "hardware/sync.h"
+#include "hardware/pwm.h"
 #include "pico_servo.h"
 
 #include "adc-math.h"
@@ -28,16 +29,26 @@
 #include "pololu-driver.h"
 
 const uint LED_PIN = 25;
-
+const uint PCB_LED_PIN = 7;
+const uint HALL_EFFECT_PIN = 11;// Use GPIO 11 for the hall effect sensor input
 // 12-bit conversion, assume max value == ADC_VREF == 3.3 V
 const float conversion_factor = 3.3f / (1 << 12);
+// --- Hall Effect Global Variables ---
+uint16_t previous_hall_count = 0;
+// --- Actuator Positioning Variables ---
+int current_motor_direction = 0; // 1 for forward, -1 for reverse, 0 for stop
+int32_t absolute_position = 0;   // Signed integer to track true position
+uint16_t last_pwm_count = 0;     // To calculate the change between timer ticks
+
+// --- Targeting Variables ---
+int32_t target_position = 0;
+bool auto_mode = false;             // Tracks if we are driving to a target or using manual control
+const int32_t POSITION_TOLERANCE = 20; // Deadband: Stop motor if within 20 ticks of target
+
 
 NAU7802 scale;
 
 // Publishers and messages
-rcl_publisher_t publisher;
-std_msgs__msg__Int32 msg;
-
 rcl_publisher_t board_temperature_publisher;
 std_msgs__msg__Float32 board_temperature_msg;
 
@@ -53,12 +64,36 @@ std_msgs__msg__Bool led_msg;
 rcl_subscription_t motor_subscriber;
 std_msgs__msg__Int32 motor_subscriber_msg;
 
-void timer_callback(rcl_timer_t *timer, int64_t last_call_time) {
-  rcl_ret_t ret = rcl_publish(&publisher, &msg, NULL);
-  if (ret != RCL_RET_OK) {
-    gpio_put(LED_PIN, 0); // turn off LED as error signal
+// Publishers and messages for the Hall Sensor
+rcl_publisher_t hall_sensor_publisher;
+std_msgs__msg__Int32 hall_sensor_msg;
+
+rcl_subscription_t target_subscriber;
+std_msgs__msg__Int32 target_msg;
+
+
+void hall_sensor_timer_callback(rcl_timer_t *timer, int64_t last_call_time) {
+  uint slice_num = pwm_gpio_to_slice_num(HALL_EFFECT_PIN);
+  uint16_t current_count = pwm_get_counter(slice_num);
+
+  // Calculate how many pulses happened since the last check.
+  // Because these are uint16_t, this math automatically handles the 65535 -> 0 rollover!
+  uint16_t delta = current_count - last_pwm_count;
+  last_pwm_count = current_count;
+
+  // Add or subtract from our true position based on motor direction
+  if (current_motor_direction == 1) {
+    absolute_position += delta;
+  } else if (current_motor_direction == -1) {
+    absolute_position -= delta;
   }
-  msg.data++;
+
+  // Publish the true absolute position
+  hall_sensor_msg.data = absolute_position;
+  rcl_ret_t ret = rcl_publish(&hall_sensor_publisher, &hall_sensor_msg, NULL);
+  if (ret != RCL_RET_OK) {
+    gpio_put(PCB_LED_PIN, 0); 
+  }
 }
 
 void board_temperature_callback(rcl_timer_t *timer, int64_t last_call_time) {
@@ -75,7 +110,7 @@ void board_temperature_callback(rcl_timer_t *timer, int64_t last_call_time) {
   rcl_ret_t ret =
       rcl_publish(&board_temperature_publisher, &board_temperature_msg, NULL);
   if (ret != RCL_RET_OK) {
-    gpio_put(LED_PIN, 0); // turn off LED as error signal
+    gpio_put(PCB_LED_PIN, 0); // turn off LED as error signal
   }
 }
 
@@ -89,7 +124,7 @@ void motor_current_callback(rcl_timer_t *timer, int64_t last_call_time) {
   rcl_ret_t ret =
       rcl_publish(&motor_current_publisher, &motor_current_msg, NULL);
   if (ret != RCL_RET_OK) {
-    gpio_put(LED_PIN, 0); // turn off LED as error signal
+    gpio_put(PCB_LED_PIN, 0); // turn off LED as error signal
   }
 }
 
@@ -114,18 +149,23 @@ void load_cell_callback(rcl_timer_t *timer, int64_t last_call_time) {
     load_cell_msg.data = weight;
     rcl_ret_t ret = rcl_publish(&load_cell_publisher, &load_cell_msg, NULL);
     if (ret != RCL_RET_OK) {
-      gpio_put(LED_PIN, 0);
+      gpio_put(PCB_LED_PIN, 0);
     }
   }
 }
 
 void motor_callback(const void *msgin) {
   const std_msgs__msg__Int32 *msg = (const std_msgs__msg__Int32 *)msgin;
+  auto_mode = false; // Turn off targeting if manual override is received
+  
   if (msg->data == 1) {
+    current_motor_direction = 1;
     motor_forward();
-  } else if (msg->data == 2) {
+  } else if (msg->data == -1) {
+    current_motor_direction = -1;
     motor_reverse();
   } else if (msg->data == 0) {
+    current_motor_direction = 0;
     motor_stop();
   }
 }
@@ -133,6 +173,12 @@ void motor_callback(const void *msgin) {
 void led_callback(const void *msgin) {
   const std_msgs__msg__Bool *msg = (const std_msgs__msg__Bool *)msgin;
   gpio_put(LED_PIN, msg->data ? 1 : 0);
+}
+
+void target_callback(const void *msgin) {
+  const std_msgs__msg__Int32 *msg = (const std_msgs__msg__Int32 *)msgin;
+  target_position = msg->data;
+  auto_mode = true; // Hand control over to the targeting system
 }
 
 int main() {
@@ -153,6 +199,30 @@ int main() {
   gpio_init(LED_PIN);
   gpio_set_dir(LED_PIN, GPIO_OUT);
   gpio_put(LED_PIN, 1); // Start with LED ON to indicate the program is running
+
+  gpio_init(PCB_LED_PIN);
+  gpio_set_dir(PCB_LED_PIN, GPIO_OUT);
+  gpio_put(PCB_LED_PIN,
+           1); // Start with PCB LED ON to indicate the program is running
+
+  gpio_init(HALL_EFFECT_PIN);
+  gpio_set_dir(HALL_EFFECT_PIN, GPIO_IN);
+  gpio_pull_up(HALL_EFFECT_PIN); // Assuming open-drain sensor
+// --- Initialize Hardware Pulse Counter ---
+  // 1. Set the pin to be controlled by the PWM hardware
+  gpio_set_function(HALL_EFFECT_PIN, GPIO_FUNC_PWM);
+  
+  // 2. Figure out which PWM slice is connected to this pin
+  uint slice_num = pwm_gpio_to_slice_num(HALL_EFFECT_PIN);
+  
+  // 3. Get the default PWM config
+  pwm_config cfg = pwm_get_default_config();
+  
+  // 4. MAGIC STEP: Tell it to count rising edges on the 'B' pin instead of generating a clock
+  pwm_config_set_clkdiv_mode(&cfg, PWM_DIV_B_RISING);
+  
+  // 5. Initialize and start the hardware counter
+  pwm_init(slice_num, &cfg, true);
 
   default_i2c_init(); // Initialize I2C for INA219 and NAU7802
 
@@ -175,10 +245,11 @@ int main() {
 
   // servo_attach(SERVO_PIN);
 
-  rcl_timer_t timer;
   rcl_timer_t board_temperature_timer;
   rcl_timer_t motor_current_timer;
   rcl_timer_t load_cell_timer;
+  rcl_timer_t hall_sensor_timer;
+
 
   rcl_node_t node;
   rcl_allocator_t allocator = rcl_get_default_allocator();
@@ -196,9 +267,6 @@ int main() {
   rclc_node_init_default(&node, "pico_motor_node", "", &support);
 
   // Publisher
-  rclc_publisher_init_default(&publisher, &node,
-                              ROSIDL_GET_MSG_TYPE_SUPPORT(std_msgs, msg, Int32),
-                              "pico_counter");
 
   rclc_publisher_init_default(
       &board_temperature_publisher, &node,
@@ -212,8 +280,11 @@ int main() {
       &load_cell_publisher, &node,
       ROSIDL_GET_MSG_TYPE_SUPPORT(std_msgs, msg, Float32), "load_cell_weight");
 
+  rclc_publisher_init_default(&hall_sensor_publisher, &node,
+                              ROSIDL_GET_MSG_TYPE_SUPPORT(std_msgs, msg, Int32),
+                              "hall_sensor_counts");
+
   // Timer
-  rclc_timer_init_default(&timer, &support, RCL_MS_TO_NS(100), timer_callback);
   rclc_timer_init_default(&board_temperature_timer, &support, RCL_MS_TO_NS(500),
                           board_temperature_callback);
   rclc_timer_init_default(&motor_current_timer, &support, RCL_MS_TO_NS(100),
@@ -221,6 +292,10 @@ int main() {
   rclc_timer_init_default(&load_cell_timer, &support,
                           RCL_MS_TO_NS(12), // ~80 SPS
                           load_cell_callback);
+
+  rclc_timer_init_default(&hall_sensor_timer, &support, RCL_MS_TO_NS(100),
+                          hall_sensor_timer_callback);
+
   // Subscriber
   rclc_subscription_init_default(
       &led_subscriber, &node, ROSIDL_GET_MSG_TYPE_SUPPORT(std_msgs, msg, Bool),
@@ -232,20 +307,18 @@ int main() {
       ROSIDL_GET_MSG_TYPE_SUPPORT(std_msgs, msg, Int32), "motor_control");
 
   // Executor
-  // Initialize the executor with a capacity for 6 handles (timer + board
-  // temperature timer + motor current timer + 2 subscribers)
+  // Initialize the executor with a capacity for 6 handles (board
+  // temperature timer + motor current timer + load cell timer + hall sensor timer + 2 subscribers)
   rclc_executor_init(&executor, &support.context, 6, &allocator);
-  rclc_executor_add_timer(&executor, &timer);
   rclc_executor_add_timer(&executor, &board_temperature_timer);
   rclc_executor_add_timer(&executor, &motor_current_timer);
   rclc_executor_add_timer(&executor, &load_cell_timer);
-
+  rclc_executor_add_timer(&executor, &hall_sensor_timer);
   rclc_executor_add_subscription(&executor, &led_subscriber, &led_msg,
                                  &led_callback, ON_NEW_DATA);
   rclc_executor_add_subscription(&executor, &motor_subscriber,
                                  &motor_subscriber_msg, &motor_callback,
                                  ON_NEW_DATA);
-  msg.data = 0;
   while (true) {
     rclc_executor_spin_some(&executor, RCL_MS_TO_NS(1));
   }

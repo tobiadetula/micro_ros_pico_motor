@@ -13,7 +13,7 @@
  * - A PWM signal here controls motor speed.
  * - Duty cycle directly controls average motor voltage.
  */
-const uint PWM_PIN = 16;
+const uint PWM_PIN = 14;
 
 /* Direction control pin (connects to MD31C DIR input)
  * - Default state: LOW
@@ -21,21 +21,21 @@ const uint PWM_PIN = 16;
  * - LOW   → Current flows OUTB → OUTA
  * - Determines motor rotation direction.
  */
-const uint DIR_PIN = 17;
+const uint DIR_PIN = 15;
 
 /* Sleep control pin (connects to MD31C SLP input)
  * - Default state: HIGH (driver enabled by default)
  * - Drive LOW to enter low-power sleep mode.
  * - When LOW, motor outputs are disabled.
  */
-const uint SLEEP_PIN = 18;
+const uint SLEEP_PIN = 13;
 
 /* Fault indicator pin (connects to MD31C FLT output)
  * - Open-drain output from driver.
  * - Goes LOW when a fault occurs (overcurrent, overtemp, etc.).
  * - Requires external pull-up resistor to logic voltage.
  */
-const uint FAULT_PIN = 19;
+const uint FAULT_PIN = 12;
 
 /* Current sense pin (connects to MD31C CS output → ADC input)
  * - Outputs voltage proportional to motor current.
