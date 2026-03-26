@@ -88,13 +88,13 @@ void motor_init()
 
 void motor_forward()
 {
-    gpio_put(DIR_PIN, 0); // Set direction
+    gpio_put(DIR_PIN, 1); // Set direction
     gpio_put(PWM_PIN, 1); // Start motor at full speed (for testing)
 }
 
 void motor_reverse()
 {
-    gpio_put(DIR_PIN, 1); // Set direction
+    gpio_put(DIR_PIN, 0); // Set direction
     gpio_put(PWM_PIN, 1); // Start motor at full speed (for testing)
 }   
 

@@ -71,28 +71,60 @@ std_msgs__msg__Int32 hall_sensor_msg;
 rcl_subscription_t target_subscriber;
 std_msgs__msg__Int32 target_msg;
 
+rcl_subscription_t tare_subscriber;
+std_msgs__msg__Bool tare_msg;
+
+rcl_subscription_t zero_position_subscriber;
+std_msgs__msg__Bool zero_position_msg;
+
 
 void hall_sensor_timer_callback(rcl_timer_t *timer, int64_t last_call_time) {
   uint slice_num = pwm_gpio_to_slice_num(HALL_EFFECT_PIN);
   uint16_t current_count = pwm_get_counter(slice_num);
 
-  // Calculate how many pulses happened since the last check.
-  // Because these are uint16_t, this math automatically handles the 65535 -> 0 rollover!
+  // 1. Calculate current absolute position
   uint16_t delta = current_count - last_pwm_count;
   last_pwm_count = current_count;
 
-  // Add or subtract from our true position based on motor direction
   if (current_motor_direction == 1) {
     absolute_position += delta;
   } else if (current_motor_direction == -1) {
     absolute_position -= delta;
   }
 
-  // Publish the true absolute position
+  // 2. Publish position
   hall_sensor_msg.data = absolute_position;
   rcl_ret_t ret = rcl_publish(&hall_sensor_publisher, &hall_sensor_msg, NULL);
   if (ret != RCL_RET_OK) {
     gpio_put(PCB_LED_PIN, 0); 
+  }
+
+  // 3. Auto-Targeting Logic
+  if (auto_mode) {
+    int32_t error = target_position - absolute_position;
+
+    if (error > POSITION_TOLERANCE) {
+      // We are too low, move forward
+      if (current_motor_direction != 1) { // Only call motor_forward() once, don't spam it
+        current_motor_direction = 1;
+        motor_forward();
+      }
+    } 
+    else if (error < -POSITION_TOLERANCE) {
+      // We are too high, move backward
+      if (current_motor_direction != -1) {
+        current_motor_direction = -1;
+        motor_reverse();
+      }
+    } 
+    else {
+      // We are inside the tolerance zone! Stop!
+      if (current_motor_direction != 0) {
+        current_motor_direction = 0;
+        motor_stop();
+        auto_mode = false; // Target reached, turn off auto mode
+      }
+    }
   }
 }
 
@@ -181,6 +213,24 @@ void target_callback(const void *msgin) {
   auto_mode = true; // Hand control over to the targeting system
 }
 
+void tare_callback(const void *msgin) {
+  const std_msgs__msg__Bool *msg = (const std_msgs__msg__Bool *)msgin;
+  if (msg->data == true) {
+    // FIX: Provide a variable to store the calculated offset
+    int32_t new_zero_offset = 0;
+    nau7802_calculate_zero_offset(&scale, 64, &new_zero_offset); 
+  }
+}
+
+void zero_position_callback(const void *msgin) {
+  const std_msgs__msg__Bool *msg = (const std_msgs__msg__Bool *)msgin;
+  if (msg->data == true) {
+    absolute_position = 0;   // Reset the current position
+    target_position = 0;     // Reset the target so it doesn't run away
+    auto_mode = false;       // Turn off auto-driving
+  }
+}
+
 int main() {
   rmw_uros_set_custom_transport(
       true, NULL, pico_serial_transport_open, pico_serial_transport_close,
@@ -232,7 +282,7 @@ int main() {
 
   nau7802_init(&scale);
   if (!nau7802_begin(&scale, I2C_BUS, /*initialize=*/true)) {
-    gpio_put(LED_PIN, 0); // turn off LED to indicate failure
+    gpio_put(PCB_LED_PIN, 0); // turn off LED to indicate failure
                           // return -1;
   }
 
@@ -284,6 +334,7 @@ int main() {
                               ROSIDL_GET_MSG_TYPE_SUPPORT(std_msgs, msg, Int32),
                               "hall_sensor_counts");
 
+
   // Timer
   rclc_timer_init_default(&board_temperature_timer, &support, RCL_MS_TO_NS(500),
                           board_temperature_callback);
@@ -306,10 +357,21 @@ int main() {
       &motor_subscriber, &node,
       ROSIDL_GET_MSG_TYPE_SUPPORT(std_msgs, msg, Int32), "motor_control");
 
+    rclc_subscription_init_default(
+    &target_subscriber, &node,
+    ROSIDL_GET_MSG_TYPE_SUPPORT(std_msgs, msg, Int32), "target_position");
+
+    rclc_subscription_init_default(
+      &tare_subscriber, &node, ROSIDL_GET_MSG_TYPE_SUPPORT(std_msgs, msg, Bool),
+      "tare_scale");
+
+    rclc_subscription_init_default(
+      &zero_position_subscriber, &node, ROSIDL_GET_MSG_TYPE_SUPPORT(std_msgs, msg, Bool),
+      "zero_position");
   // Executor
-  // Initialize the executor with a capacity for 6 handles (board
-  // temperature timer + motor current timer + load cell timer + hall sensor timer + 2 subscribers)
-  rclc_executor_init(&executor, &support.context, 6, &allocator);
+  // Initialize the executor with a capacity for 9 handles (board
+  // temperature timer + motor current timer + load cell timer + hall sensor timer + 4 subscribers)
+  rclc_executor_init(&executor, &support.context, 9, &allocator);
   rclc_executor_add_timer(&executor, &board_temperature_timer);
   rclc_executor_add_timer(&executor, &motor_current_timer);
   rclc_executor_add_timer(&executor, &load_cell_timer);
@@ -318,6 +380,16 @@ int main() {
                                  &led_callback, ON_NEW_DATA);
   rclc_executor_add_subscription(&executor, &motor_subscriber,
                                  &motor_subscriber_msg, &motor_callback,
+                                 ON_NEW_DATA);
+  rclc_executor_add_subscription(&executor, &target_subscriber,
+                                 &target_msg, &target_callback,
+                                 ON_NEW_DATA);
+   // Add your new TARE subscriber
+  rclc_executor_add_subscription(&executor, &tare_subscriber,
+                                 &tare_msg, &tare_callback,
+                                 ON_NEW_DATA);                         
+  rclc_executor_add_subscription(&executor, &zero_position_subscriber,
+                                 &zero_position_msg, &zero_position_callback,
                                  ON_NEW_DATA);
   while (true) {
     rclc_executor_spin_some(&executor, RCL_MS_TO_NS(1));
