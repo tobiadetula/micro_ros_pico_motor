@@ -314,7 +314,7 @@ int main() {
   }
 
   rclc_support_init(&support, 0, NULL, &allocator);
-  rclc_node_init_default(&node, "pico_motor_node", "", &support);
+  rclc_node_init_default(&node, "pico_motor_node", "microros", &support);
 
   // Publisher
 
@@ -397,3 +397,6 @@ int main() {
 
   return 0;
 }
+
+
+//NOTE: Time for Actuator Full extension is 40s
