@@ -45,6 +45,29 @@ int32_t target_position = 0;
 bool auto_mode = false;             // Tracks if we are driving to a target or using manual control
 const int32_t POSITION_TOLERANCE = 20; // Deadband: Stop motor if within 20 ticks of target
 
+// --- Safety limits (tunable via topics) ---
+float safety_weight_limit_g    = 175.0f;  // sustained weight threshold
+float safety_current_limit_ma  = 750.0f;  // sustained current threshold
+float safety_didt_limit        = 50.0f;   // mA per 100ms — rate-of-change trip
+uint8_t safety_sustained_ticks = 3;       // how many consecutive callbacks before stop
+
+// --- Safety internal state ---
+static float  prev_filtered_current = 0.0f;
+static uint8_t weight_over_count    = 0;
+static uint8_t current_over_count   = 0;
+static bool safety_tripped          = false;
+
+static uint32_t motor_start_time_ms = 0;
+const uint32_t  MOTOR_GRACE_PERIOD_MS = 300; // Ignore current spikes for 300ms upon startup
+
+// Motor Directions 
+static uint8_t MOTOR_DIR_STOP = 0;
+static uint8_t MOTOR_DIR_FORWARD = 1;
+static uint8_t MOTOR_DIR_REVERSE = -1;
+
+static void set_motor_state(int new_dir);
+
+static void check_safety_and_stop(float filtered_current_ma, float weight_g);
 
 NAU7802 scale;
 
@@ -77,6 +100,38 @@ std_msgs__msg__Bool tare_msg;
 rcl_subscription_t zero_position_subscriber;
 std_msgs__msg__Bool zero_position_msg;
 
+// Publisher for safety events
+rcl_publisher_t safety_publisher;
+std_msgs__msg__Bool safety_msg;
+
+// Subscribers for threshold tuning
+rcl_subscription_t weight_limit_subscriber;
+std_msgs__msg__Float32 weight_limit_msg;
+
+rcl_subscription_t current_limit_subscriber;
+std_msgs__msg__Float32 current_limit_msg;
+
+rcl_subscription_t safety_reset_subscriber;
+std_msgs__msg__Bool safety_reset_msg;
+
+
+void set_motor_state(int new_dir) {
+    // If the motor is currently stopped, and we are commanding it to move, record the start time
+    if (current_motor_direction == 0 && new_dir != 0) {
+        motor_start_time_ms = to_ms_since_boot(get_absolute_time());
+    }
+    
+    current_motor_direction = new_dir;
+    
+    if (new_dir == MOTOR_DIR_FORWARD) {
+        motor_forward();
+    } else if (new_dir == MOTOR_DIR_REVERSE) {
+        motor_reverse();
+    } else {
+        motor_stop();
+    }
+}
+
 
 void hall_sensor_timer_callback(rcl_timer_t *timer, int64_t last_call_time) {
   uint slice_num = pwm_gpio_to_slice_num(HALL_EFFECT_PIN);
@@ -105,29 +160,30 @@ void hall_sensor_timer_callback(rcl_timer_t *timer, int64_t last_call_time) {
 
     if (error > POSITION_TOLERANCE) {
       // We are too low, move forward
-      if (current_motor_direction != 1) { // Only call motor_forward() once, don't spam it
-        current_motor_direction = 1;
-        motor_forward();
+      if (current_motor_direction != MOTOR_DIR_FORWARD) { // Only call motor_forward() once, don't spam it
+        current_motor_direction = MOTOR_DIR_FORWARD;
+        set_motor_state(MOTOR_DIR_FORWARD);
       }
     } 
     else if (error < -POSITION_TOLERANCE) {
       // We are too high, move backward
-      if (current_motor_direction != -1) {
-        current_motor_direction = -1;
-        motor_reverse();
+      if (current_motor_direction != MOTOR_DIR_REVERSE) {
+        current_motor_direction = MOTOR_DIR_REVERSE;
+        set_motor_state(MOTOR_DIR_REVERSE);
       }
     } 
     else {
       // We are inside the tolerance zone! Stop!
-      if (current_motor_direction != 0) {
-        current_motor_direction = 0;
-        motor_stop();
+      if (current_motor_direction != MOTOR_DIR_STOP) {
+        current_motor_direction = MOTOR_DIR_STOP;
+        set_motor_state(MOTOR_DIR_STOP);
         auto_mode = false; // Target reached, turn off auto mode
       }
     }
   }
 }
 
+#ifdef ENABLE_BOARD_TEMP_PUBLISHING
 void board_temperature_callback(rcl_timer_t *timer, int64_t last_call_time) {
   adc_select_input(4); // Select ADC channel for temperature sensor
 
@@ -145,19 +201,25 @@ void board_temperature_callback(rcl_timer_t *timer, int64_t last_call_time) {
     gpio_put(PCB_LED_PIN, 0); // turn off LED as error signal
   }
 }
+#endif
 
 void motor_current_callback(rcl_timer_t *timer, int64_t last_call_time) {
   // adc_select_input(0); // Tell the ADC to look at GPIO 26
   // float current = motor_get_current_amps();
-  float current =
+  float raw_current =
       fabs(ina219_read_current()); // Calculate current using shunt voltage and
                                    // shunt resistor value (0.1 Ohm)
-  motor_current_msg.data = current;
+  float filtered_current = current_ema_update(raw_current);
+  motor_current_msg.data = filtered_current;
   rcl_ret_t ret =
       rcl_publish(&motor_current_publisher, &motor_current_msg, NULL);
   if (ret != RCL_RET_OK) {
     gpio_put(PCB_LED_PIN, 0); // turn off LED as error signal
   }
+      // Safety check — weight comes from the last published load_cell_msg
+    if (current_motor_direction != 0) {  // only check when motor is running
+        check_safety_and_stop(filtered_current, load_cell_msg.data);
+    }
 }
 
 // Global accumulator state
@@ -188,18 +250,26 @@ void load_cell_callback(rcl_timer_t *timer, int64_t last_call_time) {
 
 void motor_callback(const void *msgin) {
   const std_msgs__msg__Int32 *msg = (const std_msgs__msg__Int32 *)msgin;
+  if (safety_tripped) return;  // add this guard to prevent motor commands from working when safety is tripped
   auto_mode = false; // Turn off targeting if manual override is received
   
-  if (msg->data == 1) {
-    current_motor_direction = 1;
-    motor_forward();
-  } else if (msg->data == -1) {
-    current_motor_direction = -1;
-    motor_reverse();
-  } else if (msg->data == 0) {
-    current_motor_direction = 0;
-    motor_stop();
+  if (msg->data == MOTOR_DIR_FORWARD) {
+    current_motor_direction = MOTOR_DIR_FORWARD;
+    set_motor_state(MOTOR_DIR_FORWARD);
+  } else if (msg->data == MOTOR_DIR_REVERSE) {
+    current_motor_direction = MOTOR_DIR_REVERSE;
+    set_motor_state(MOTOR_DIR_REVERSE);
+  } else if (msg->data == MOTOR_DIR_STOP) {
+    current_motor_direction = MOTOR_DIR_STOP;
+    set_motor_state(MOTOR_DIR_STOP);
   }
+}
+
+void target_callback(const void *msgin) {
+  if (safety_tripped) return;  // add this
+  const std_msgs__msg__Int32 *msg = (const std_msgs__msg__Int32 *)msgin;
+  target_position = msg->data;
+  auto_mode = true; // Hand control over to the targeting system
 }
 
 void led_callback(const void *msgin) {
@@ -207,11 +277,6 @@ void led_callback(const void *msgin) {
   gpio_put(LED_PIN, msg->data ? 1 : 0);
 }
 
-void target_callback(const void *msgin) {
-  const std_msgs__msg__Int32 *msg = (const std_msgs__msg__Int32 *)msgin;
-  target_position = msg->data;
-  auto_mode = true; // Hand control over to the targeting system
-}
 
 void tare_callback(const void *msgin) {
   const std_msgs__msg__Bool *msg = (const std_msgs__msg__Bool *)msgin;
@@ -231,6 +296,81 @@ void zero_position_callback(const void *msgin) {
   }
 }
 
+void weight_limit_callback(const void *msgin) {
+    const std_msgs__msg__Float32 *msg = (const std_msgs__msg__Float32 *)msgin;
+    if (msg->data > 0.0f) safety_weight_limit_g = msg->data;
+}
+
+void current_limit_callback(const void *msgin) {
+    const std_msgs__msg__Float32 *msg = (const std_msgs__msg__Float32 *)msgin;
+    if (msg->data > 0.0f) safety_current_limit_ma = msg->data;
+}
+
+void safety_reset_callback(const void *msgin) {
+    const std_msgs__msg__Bool *msg = (const std_msgs__msg__Bool *)msgin;
+    if (msg->data == true) {
+        safety_tripped       = false;
+        weight_over_count    = 0;
+        current_over_count   = 0;
+        prev_filtered_current = 0.0f;
+        safety_msg.data = false;
+        rcl_publish(&safety_publisher, &safety_msg, NULL);
+    }
+}
+
+
+// This function checks the current and weight against safety limits and stops the motor if necessary`
+static void check_safety_and_stop(float filtered_current_ma, float weight_g) {
+    if (safety_tripped) return;  // already stopped, don't re-trigger
+
+    // Calculate if we are currently in the startup grace period
+    uint32_t current_time = to_ms_since_boot(get_absolute_time());
+    bool in_grace_period = (current_time - motor_start_time_ms) < MOTOR_GRACE_PERIOD_MS;
+
+    // --- Rate-of-change (di/dt) on current ---
+    float didt = filtered_current_ma - prev_filtered_current;
+    prev_filtered_current = filtered_current_ma;
+
+// 🔴 ONLY check current safety if we are OUTSIDE the grace period
+    if (!in_grace_period) {
+        // Immediate hard stop on violent current spike
+        if (didt > safety_didt_limit) {
+            safety_tripped = true;
+            set_motor_state(MOTOR_DIR_STOP);
+            auto_mode = false;
+            safety_msg.data = true;
+            rcl_publish(&safety_publisher, &safety_msg, NULL);
+            return;
+        }
+
+        // Sustained current threshold check
+        if (filtered_current_ma > safety_current_limit_ma) {
+            current_over_count++;
+        } else {
+            current_over_count = 0;
+        }
+} else {
+        // Reset current counter during grace period to prevent false accumulation
+        current_over_count = 0; 
+    }
+    
+    if (weight_g > safety_weight_limit_g) {
+        weight_over_count++;
+    } else {
+        weight_over_count = 0;
+    }
+
+    if (current_over_count >= safety_sustained_ticks ||
+        weight_over_count  >= safety_sustained_ticks) {
+        safety_tripped = true;
+        current_motor_direction = MOTOR_DIR_STOP;
+        auto_mode = false;
+        set_motor_state(MOTOR_DIR_STOP);
+        safety_msg.data = true;
+        rcl_publish(&safety_publisher, &safety_msg, NULL);
+    }
+}
+
 int main() {
   rmw_uros_set_custom_transport(
       true, NULL, pico_serial_transport_open, pico_serial_transport_close,
@@ -241,8 +381,9 @@ int main() {
   adc_init();
   adc_gpio_init(CURRENT_SENSE_PIN); // Initialize GPIO for current sensing
 
+  #ifdef ENABLE_BOARD_TEMP_PUBLISHING
   adc_set_temp_sensor_enabled(true);
-
+  #endif
   // Initialize motor driver
   motor_init();
 
@@ -318,10 +459,13 @@ int main() {
 
   // Publisher
 
+  #ifdef ENABLE_BOARD_TEMP_PUBLISHING
+  // NOTE: Board temperature is not super useful for this application, so it's commented out to save resources. You can re-enable it if you want that data.
   rclc_publisher_init_default(
       &board_temperature_publisher, &node,
       ROSIDL_GET_MSG_TYPE_SUPPORT(std_msgs, msg, Float32), "board_temperature");
-
+    
+  #endif
   rclc_publisher_init_default(
       &motor_current_publisher, &node,
       ROSIDL_GET_MSG_TYPE_SUPPORT(std_msgs, msg, Float32), "motor_current");
@@ -334,10 +478,15 @@ int main() {
                               ROSIDL_GET_MSG_TYPE_SUPPORT(std_msgs, msg, Int32),
                               "hall_sensor_counts");
 
+  rclc_publisher_init_default(&safety_publisher, &node,
+    ROSIDL_GET_MSG_TYPE_SUPPORT(std_msgs, msg, Bool), "safety_trip");
 
   // Timer
+  #ifdef ENABLE_BOARD_TEMP_PUBLISHING
   rclc_timer_init_default(&board_temperature_timer, &support, RCL_MS_TO_NS(500),
                           board_temperature_callback);
+    #endif // ENABLE_BOARD_TEMP_PUBLISHING  
+
   rclc_timer_init_default(&motor_current_timer, &support, RCL_MS_TO_NS(100),
                           motor_current_callback);
   rclc_timer_init_default(&load_cell_timer, &support,
@@ -352,7 +501,6 @@ int main() {
       &led_subscriber, &node, ROSIDL_GET_MSG_TYPE_SUPPORT(std_msgs, msg, Bool),
       "led_control");
 
-  // ADD THIS before the executor setup
   rclc_subscription_init_default(
       &motor_subscriber, &node,
       ROSIDL_GET_MSG_TYPE_SUPPORT(std_msgs, msg, Int32), "motor_control");
@@ -368,11 +516,28 @@ int main() {
     rclc_subscription_init_default(
       &zero_position_subscriber, &node, ROSIDL_GET_MSG_TYPE_SUPPORT(std_msgs, msg, Bool),
       "zero_position");
-  // Executor
-  // Initialize the executor with a capacity for 9 handles (board
+
+rclc_subscription_init_default(&weight_limit_subscriber, &node,
+    ROSIDL_GET_MSG_TYPE_SUPPORT(std_msgs, msg, Float32), "set_weight_limit");
+
+rclc_subscription_init_default(&current_limit_subscriber, &node,
+    ROSIDL_GET_MSG_TYPE_SUPPORT(std_msgs, msg, Float32), "set_current_limit");
+
+rclc_subscription_init_default(&safety_reset_subscriber, &node,
+    ROSIDL_GET_MSG_TYPE_SUPPORT(std_msgs, msg, Bool), "safety_reset");
+  
+  
+      // Executor
+  // Initialize the executor with a capacity for 11 handles (board
   // temperature timer + motor current timer + load cell timer + hall sensor timer + 4 subscribers)
-  rclc_executor_init(&executor, &support.context, 9, &allocator);
+#ifdef ENABLE_BOARD_TEMP_PUBLISHING
+  rclc_executor_init(&executor, &support.context, 12, &allocator);
   rclc_executor_add_timer(&executor, &board_temperature_timer);
+#else
+  rclc_executor_init(&executor, &support.context, 11, &allocator);
+#endif
+
+
   rclc_executor_add_timer(&executor, &motor_current_timer);
   rclc_executor_add_timer(&executor, &load_cell_timer);
   rclc_executor_add_timer(&executor, &hall_sensor_timer);
@@ -391,6 +556,13 @@ int main() {
   rclc_executor_add_subscription(&executor, &zero_position_subscriber,
                                  &zero_position_msg, &zero_position_callback,
                                  ON_NEW_DATA);
+rclc_executor_add_subscription(&executor, &weight_limit_subscriber,
+    &weight_limit_msg, &weight_limit_callback, ON_NEW_DATA);
+rclc_executor_add_subscription(&executor, &current_limit_subscriber,
+    &current_limit_msg, &current_limit_callback, ON_NEW_DATA);
+rclc_executor_add_subscription(&executor, &safety_reset_subscriber,
+    &safety_reset_msg, &safety_reset_callback, ON_NEW_DATA);
+
   while (true) {
     rclc_executor_spin_some(&executor, RCL_MS_TO_NS(1));
   }

@@ -55,4 +55,20 @@ static float ema_update(float new_sample)
     return temp_ema;
 }
 
+
+#define CURRENT_EMA_ALPHA 0.3f
+
+static float current_ema = 0.0f;
+static bool current_ema_initialized = false;
+
+static float current_ema_update(float new_sample) {
+    if (!current_ema_initialized) {
+        current_ema = new_sample;
+        current_ema_initialized = true;
+        return current_ema;
+    }
+    current_ema = CURRENT_EMA_ALPHA * new_sample +
+                  (1.0f - CURRENT_EMA_ALPHA) * current_ema;
+    return current_ema;
+}
 #endif // ! ADC_MATH_H
