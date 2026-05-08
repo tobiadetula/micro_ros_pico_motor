@@ -50,7 +50,7 @@ uint16_t last_pwm_count = 0;     // To calculate the change between timer ticks
 // --- Targeting Variables ---
 int32_t target_position = 0;
 bool auto_mode = false;                // Tracks if we are driving to a target or using manual control
-const int32_t POSITION_TOLERANCE = 20; // Deadband: Stop motor if within 20 ticks of target
+const int32_t POSITION_TOLERANCE = 10; // Deadband: Stop motor if within 20 ticks of target
 
 // --- Safety limits ---
 float safety_weight_limit_g    = 175.0f;  // sustained weight threshold
@@ -201,8 +201,12 @@ void command_callback(const void *msgin) {
     // 2. Process Motor Commands (Ignore if safety is tripped)
     if (safety_tripped) return;
 
+    if (msg->use_auto_mode) {
+        target_position = msg->target_position;
+        auto_mode = true;
+    }
     // If the PC sent a target position that differs from the current one, enter auto mode
-    if (msg->target_position != target_position) {
+    else if (msg->target_position != target_position) {
         target_position = msg->target_position;
         auto_mode = true;
     } 
@@ -287,6 +291,8 @@ void unified_control_loop_callback(rcl_timer_t *timer, int64_t last_call_time) {
     state_msg.motor_state      = current_motor_direction;
     state_msg.auto_mode_active = auto_mode;
     state_msg.safety_tripped   = safety_tripped;
+    state_msg.safeguard_current_amps = safety_current_limit_ma / 1000.0f;
+    state_msg.safeguard_force_grams  = safety_weight_limit_g;
 
     #ifdef ENABLE_BOARD_TEMP_PUBLISHING
     adc_select_input(4); 
